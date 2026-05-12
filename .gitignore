@@ -1,0 +1,19 @@
+# Dependencies
+/node_modules
+
+# Next.js
+/.next/
+/out/
+
+# Env (never commit secrets)
+.env
+.env*.local
+
+# Logs & debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+
+# Typescript / tooling
+*.tsbuildinfo
