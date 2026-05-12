@@ -31,6 +31,14 @@ Useful npm scripts:
 | `npm run db:migrate` | Apply Prisma migrations |
 | `npm run db:studio` | Prisma Studio on the configured database |
 
+## Calendar + Outlook + Webex (current sprint focus)
+
+`/dashboard/calendar` is the working surface:
+
+- **OpsPilot-internal events** are stored in Postgres and can optionally post a Markdown notice to Webex (`WEBEX_BOT_TOKEN` + `WEBEX_NOTIFICATION_ROOM_ID`).
+- **Outlook** appointments are mirrored via delegated OAuth (PKCE). After **Connect Outlook**, choose **Pull from Outlook** to upsert `/me/calendar/calendarView` results into OpsPilot (`GET/POST /api/v1/calendar/*`, `/api/v1/calendar/sync-outlook`).
+- Microsoft refresh tokens are **AES-GCM encrypted** before persistence — set **`INTEGRATIONS_ENCRYPTION_KEY`** (`openssl rand -hex 32`) and register Entra redirect `APP_BASE_URL/api/v1/integrations/microsoft/callback`. See [.env.example](./.env.example).
+
 | Document | Purpose |
 |----------|---------|
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | System boundaries, integrations, AI layer, security, deployment |

@@ -7,7 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Application roles aligned with docs (PHASING Phase 0).
 enum UserRole {
   PLATFORM_ADMIN
   DEVOPS_ENGINEER
@@ -15,6 +14,18 @@ enum UserRole {
   RELEASE_MANAGER
   LEADERSHIP
   VIEWER
+}
+
+enum CalendarSource {
+  INTERNAL
+  OUTLOOK
+}
+
+enum WebexDeliveryStatus {
+  NONE
+  SKIPPED
+  SENT
+  FAILED
 }
 
 model User {
@@ -28,20 +39,62 @@ model User {
   auditEvents AuditLog[] @relation("ActorAuditLogs")
 }
 
-/// Append-friendly audit entries for approvals, integrations, mutations (Phase 0 table only).
 model AuditLog {
-  id             String    @id @default(cuid())
-  createdAt      DateTime  @default(now())
+  id              String    @id @default(cuid())
+  createdAt       DateTime  @default(now())
   correlationId String?
-  actorUserId    String?
-  action         String
-  resourceType   String?
-  resourceId     String?
-  payload        Json?
-  metadata       Json?
-  actor          User?     @relation("ActorAuditLogs", fields: [actorUserId], references: [id])
+  actorUserId     String?
+  action          String
+  resourceType    String?
+  resourceId      String?
+  payload         Json?
+  metadata        Json?
+  actor           User?     @relation("ActorAuditLogs", fields: [actorUserId], references: [id])
 
   @@index([createdAt(sort: Desc)])
   @@index([actorUserId])
   @@index([correlationId])
+}
+
+model CalendarEvent {
+  id         String               @id @default(cuid())
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+  title      String
+  description String?
+  location   String?
+  startsAt   DateTime
+  endsAt     DateTime
+  timeZone   String               @default("UTC")
+  allDay     Boolean              @default(false)
+  source     CalendarSource       @default(INTERNAL)
+  outlookEventId String?         @unique
+  outlookICalUid String?
+  outlookWebLink String?
+
+  notifyWebex     Boolean             @default(false)
+  webexDelivery   WebexDeliveryStatus @default(NONE)
+  webexHttpStatus Int?
+  webexDetail     String?
+
+  @@index([startsAt(sort: Asc)])
+}
+
+model OAuthPkceState {
+  state        String   @id
+  codeVerifier String
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt(sort: Asc)])
+}
+
+model OutlookCalendarCredential {
+  id                    String    @id
+  encryptedRefreshToken String?
+  scope                 String?
+  issuedAt              DateTime  @default(now())
+  tenantIdUsed          String?
+  azureAdUserObjectId   String?
+  userPrincipalName     String?
+  updatedAt             DateTime  @updatedAt
 }
