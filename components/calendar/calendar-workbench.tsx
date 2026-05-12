@@ -18,12 +18,25 @@ type CalendarWire = {
   webexDelivery: "NONE" | "SKIPPED" | "SENT" | "FAILED";
   webexHttpStatus: number | null;
   allDay: boolean;
+  teamId: string | null;
+  seriesId: string | null;
+  team: { id: string; name: string; slug: string } | null;
+  series: {
+    id: string;
+    recurrence: string;
+    recurrenceEndsAt: string | null;
+    active: boolean;
+  } | null;
 };
+
+type TeamWire = { id: string; name: string; slug: string; createdAt: string };
 
 type EventsResponse = {
   window: { from: string; to: string };
   events: CalendarWire[];
 };
+
+type TeamsResponse = { teams: TeamWire[] };
 
 type StatusResponse = {
   outlook: {
@@ -50,6 +63,9 @@ export function CalendarWorkbench() {
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [events, setEvents] = useState<CalendarWire[]>([]);
+  const [teams, setTeams] = useState<TeamWire[]>([]);
+  const [teamFilterId, setTeamFilterId] = useState("");
+  const [banner, setBanner] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,23 +83,40 @@ export function CalendarWorkbench() {
     endsAt: "",
     timeZone: defaultTimeZone,
     notifyWebex: false,
+    teamId: "",
+    recurrence: "",
+    recurrenceEndsAt: "",
   });
 
   useEffect(() => {
     setForm((prev) => ({ ...prev, timeZone: defaultTimeZone }));
   }, [defaultTimeZone]);
 
+  useEffect(() => {
+    setForm((prev) => {
+      if (prev.teamId || teams.length === 0) return prev;
+      return { ...prev, teamId: teams[0]?.id ?? "" };
+    });
+  }, [teams]);
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [statusRes, eventsRes] = await Promise.all([
+      const eventsUrl =
+        teamFilterId ?
+          `/api/v1/calendar/events?teamId=${encodeURIComponent(teamFilterId)}`
+        : "/api/v1/calendar/events";
+
+      const [statusRes, eventsRes, teamsRes] = await Promise.all([
         fetch("/api/v1/integrations/status", { cache: "no-store" }),
-        fetch("/api/v1/calendar/events", { cache: "no-store" }),
+        fetch(eventsUrl, { cache: "no-store" }),
+        fetch("/api/v1/teams", { cache: "no-store" }),
       ]);
 
       const statusJson = await parseJson(statusRes);
       const eventsJson = await parseJson(eventsRes);
+      const teamsJson = await parseJson(teamsRes);
 
       if (!statusRes.ok || !statusJson?.ok) {
         throw new Error(statusJson?.error?.message ?? "Unable to load integration status.");
@@ -91,15 +124,19 @@ export function CalendarWorkbench() {
       if (!eventsRes.ok || !eventsJson?.ok) {
         throw new Error(eventsJson?.error?.message ?? "Unable to load calendar events.");
       }
+      if (!teamsRes.ok || !teamsJson?.ok) {
+        throw new Error(teamsJson?.error?.message ?? "Unable to load teams.");
+      }
 
       setStatus(statusJson.data as StatusResponse);
       setEvents((eventsJson.data as EventsResponse).events);
+      setTeams((teamsJson.data as TeamsResponse).teams);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [teamFilterId]);
 
   useEffect(() => {
     void refreshAll();
@@ -108,23 +145,47 @@ export function CalendarWorkbench() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setBanner(null);
+    if (!form.teamId) {
+      setError("Select a team / org for this event.");
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      title: form.title,
+      description: form.description || null,
+      location: form.location || null,
+      startsAt: new Date(form.startsAt).toISOString(),
+      endsAt: new Date(form.endsAt).toISOString(),
+      timeZone: form.timeZone,
+      notifyWebex: form.notifyWebex,
+      teamId: form.teamId,
+    };
+    if (form.recurrence) {
+      payload.recurrence = form.recurrence;
+      if (form.recurrenceEndsAt) {
+        payload.recurrenceEndsAt = new Date(form.recurrenceEndsAt).toISOString();
+      }
+    }
     const res = await fetch("/api/v1/calendar/events", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: form.title,
-        description: form.description || null,
-        location: form.location || null,
-        startsAt: new Date(form.startsAt).toISOString(),
-        endsAt: new Date(form.endsAt).toISOString(),
-        timeZone: form.timeZone,
-        notifyWebex: form.notifyWebex,
-      }),
+      body: JSON.stringify(payload),
     });
     const json = await parseJson(res);
     if (!res.ok || !json?.ok) {
       setError(json?.error?.message ?? "Create failed.");
       return;
+    }
+    const data = json.data as {
+      event?: CalendarWire;
+      series?: { id: string; recurrence: string };
+      occurrencesMaterialized?: number;
+      materializedUntilUtc?: string;
+    };
+    if (data.series) {
+      setBanner(
+        `Recurring series saved (${data.series.recurrence}). Materialized ${data.occurrencesMaterialized ?? 0} occurrence(s) through ${data.materializedUntilUtc ?? "the configured horizon"}. Schedule POST /api/v1/calendar/recurrence/tick with Authorization: Bearer and OPS_CRON_SECRET to roll new dates forward.`,
+      );
     }
     setForm((prev) => ({
       ...prev,
@@ -132,6 +193,8 @@ export function CalendarWorkbench() {
       description: "",
       location: "",
       notifyWebex: false,
+      recurrence: "",
+      recurrenceEndsAt: "",
     }));
     await refreshAll();
   }
@@ -197,6 +260,11 @@ export function CalendarWorkbench() {
       {error ? (
         <div className="rounded-lg border border-amber-500/40 bg-amber-950/30 p-3 text-sm text-amber-100">
           {error}
+        </div>
+      ) : null}
+      {banner ? (
+        <div className="rounded-lg border border-sky-500/40 bg-sky-950/30 p-3 text-sm text-sky-100">
+          {banner}
         </div>
       ) : null}
 
@@ -268,9 +336,59 @@ export function CalendarWorkbench() {
 
       <section className="rounded-xl border border-slate-800 bg-slate-900/35 p-6">
         <h3 className="text-lg font-semibold text-white">Create OpsPilot event</h3>
-        <p className="mt-1 text-sm text-slate-400">Internal events remain editable here. Toggle Webex to post a Markdown notice.</p>
+        <p className="mt-1 text-sm text-slate-400">
+          Pick a team, optional Webex ping, and a repeat cadence (materialized rows). One-off rows skip frequency.
+          Recurring reminders only post Webex once (first occurrence).
+        </p>
         <form className="mt-6 grid gap-4 lg:grid-cols-2" onSubmit={handleCreate}>
           <label className="flex flex-col gap-2 text-sm text-slate-300">
+            Team / org
+            <select
+              required
+              value={form.teamId}
+              onChange={(e) => setForm((p) => ({ ...p, teamId: e.target.value }))}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            >
+              <option value="" disabled>
+                {teams.length ? "Select a team" : "Loading teams…"}
+              </option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-2 text-sm text-slate-300">
+            Repeat (frequency)
+            <select
+              value={form.recurrence}
+              onChange={(e) => setForm((p) => ({ ...p, recurrence: e.target.value }))}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            >
+              <option value="">One-time event</option>
+              <option value="DAILY">Daily</option>
+              <option value="WEEKLY">Weekly</option>
+              <option value="BIWEEKLY">Every two weeks</option>
+              <option value="MONTHLY">Monthly</option>
+              <option value="QUARTERLY">Quarterly</option>
+            </select>
+          </label>
+          {form.recurrence ? (
+            <label className="flex flex-col gap-2 text-sm text-slate-300 lg:col-span-2">
+              Series ends (optional, local)
+              <input
+                type="datetime-local"
+                value={form.recurrenceEndsAt}
+                onChange={(e) => setForm((p) => ({ ...p, recurrenceEndsAt: e.target.value }))}
+                className="max-w-md rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              />
+              <span className="text-[11px] text-slate-500">
+                Leave blank to follow the rolling horizon (OPS_RECURRENCE_HORIZON_DAYS) plus scheduled ticks.
+              </span>
+            </label>
+          ) : null}
+          <label className="flex flex-col gap-2 text-sm text-slate-300 lg:col-span-2">
             Title
             <input
               required
@@ -342,9 +460,26 @@ export function CalendarWorkbench() {
       </section>
 
       <section className="rounded-xl border border-slate-800 bg-slate-900/25 p-6">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <h3 className="text-lg font-semibold text-white">Timeline</h3>
-          {loading ? <span className="text-xs uppercase tracking-wide text-slate-500">Loading…</span> : null}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              Team filter
+              <select
+                value={teamFilterId}
+                onChange={(e) => setTeamFilterId(e.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-white"
+              >
+                <option value="">All teams</option>
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {loading ? <span className="text-xs uppercase tracking-wide text-slate-500">Loading…</span> : null}
+          </div>
         </div>
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-800 text-sm">
@@ -352,6 +487,8 @@ export function CalendarWorkbench() {
               <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
                 <th className="py-2 pr-4">When</th>
                 <th className="py-2 pr-4">Title</th>
+                <th className="py-2 pr-4">Team</th>
+                <th className="py-2 pr-4">Series</th>
                 <th className="py-2 pr-4">Source</th>
                 <th className="py-2 pr-4">Webex</th>
                 <th className="py-2 pr-4 text-right">Actions</th>
@@ -369,6 +506,17 @@ export function CalendarWorkbench() {
                     <td className="py-3 pr-4 align-top">
                       <div className="font-medium text-white">{evt.title}</div>
                       {evt.location ? <div className="text-xs text-slate-500">{evt.location}</div> : null}
+                    </td>
+                    <td className="py-3 pr-4 align-top text-xs text-slate-400">
+                      {evt.team?.name ?? "—"}
+                    </td>
+                    <td className="py-3 pr-4 align-top text-[11px] text-slate-500">
+                      {evt.series ?
+                        <>
+                          <div className="uppercase tracking-wide">{evt.series.recurrence}</div>
+                          <div className="text-slate-600">{evt.series.active ? "active" : "stopped"}</div>
+                        </>
+                      : "—"}
                     </td>
                     <td className="py-3 pr-4 align-top text-xs uppercase tracking-wide text-slate-500">{evt.source}</td>
                     <td className="py-3 pr-4 align-top text-xs text-slate-400">

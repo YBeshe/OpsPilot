@@ -28,6 +28,15 @@ enum WebexDeliveryStatus {
   FAILED
 }
 
+/// Recurring internal calendar template (Outlook rows never attach to a series).
+enum SeriesRecurrence {
+  DAILY
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  QUARTERLY
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -56,18 +65,60 @@ model AuditLog {
   @@index([correlationId])
 }
 
-model CalendarEvent {
-  id         String               @id @default(cuid())
-  createdAt  DateTime             @default(now())
-  updatedAt  DateTime             @updatedAt
-  title      String
+model Team {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+
+  calendarEvents CalendarEvent[]
+  series         CalendarEventSeries[]
+}
+
+/// Definition for repeating OpsPilot events (materialized rows in CalendarEvent).
+model CalendarEventSeries {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  title       String
   description String?
-  location   String?
-  startsAt   DateTime
-  endsAt     DateTime
-  timeZone   String               @default("UTC")
-  allDay     Boolean              @default(false)
-  source     CalendarSource       @default(INTERNAL)
+  location    String?
+
+  timeZone String
+  allDay   Boolean @default(false)
+
+  notifyWebex Boolean @default(false)
+
+  recurrence        SeriesRecurrence
+  recurrenceEndsAt  DateTime?
+  anchorStartsAt    DateTime
+  durationMinutes   Int
+
+  active              Boolean @default(true)
+  lastExpandedUntilUtc DateTime?
+
+  events CalendarEvent[]
+
+  @@index([teamId])
+  @@index([active])
+}
+
+model CalendarEvent {
+  id          String               @id @default(cuid())
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  title       String
+  description String?
+  location    String?
+  startsAt    DateTime
+  endsAt      DateTime
+  timeZone    String               @default("UTC")
+  allDay      Boolean              @default(false)
+  source      CalendarSource       @default(INTERNAL)
   outlookEventId String?         @unique
   outlookICalUid String?
   outlookWebLink String?
@@ -77,7 +128,16 @@ model CalendarEvent {
   webexHttpStatus Int?
   webexDetail     String?
 
+  teamId String?
+  team   Team? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  seriesId String?
+  series   CalendarEventSeries? @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+
   @@index([startsAt(sort: Asc)])
+  @@index([teamId])
+  @@index([seriesId])
+  @@unique([seriesId, startsAt], map: "CalendarEvent_series_starts_unique")
 }
 
 model OAuthPkceState {

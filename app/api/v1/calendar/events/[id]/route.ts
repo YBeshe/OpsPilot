@@ -44,6 +44,15 @@ export async function PATCH(
     );
   }
 
+  if (existing.seriesId) {
+    return jsonErr(
+      "series_member",
+      "This occurrence belongs to a recurring series; it cannot be edited here. Delete it if needed, or change the series definition in a future release.",
+      correlationId,
+      409,
+    );
+  }
+
   let parsed: z.infer<typeof PatchSchema>;
   try {
     parsed = PatchSchema.parse(await request.json());
@@ -85,6 +94,17 @@ export async function PATCH(
       timeZone: parsed.timeZone?.trim() ?? undefined,
       allDay: typeof parsed.allDay === "boolean" ? parsed.allDay : undefined,
     },
+    include: {
+      team: { select: { id: true, name: true, slug: true } },
+      series: {
+        select: {
+          id: true,
+          recurrence: true,
+          recurrenceEndsAt: true,
+          active: true,
+        },
+      },
+    },
   });
 
   await recordAudit({
@@ -94,7 +114,15 @@ export async function PATCH(
     resourceId: updated.id,
   });
 
-  return jsonOk({ event: serializeCalendarEvent(updated) }, correlationId);
+  return jsonOk(
+    {
+      event: serializeCalendarEvent(updated, {
+        team: updated.team ?? undefined,
+        series: updated.series ?? undefined,
+      }),
+    },
+    correlationId,
+  );
 }
 
 export async function DELETE(

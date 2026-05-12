@@ -38,6 +38,20 @@ async function main() {
       update: { name: row.name, role: row.role },
     });
   }
+
+  const teams: { name: string; slug: string }[] = [
+    { name: "Platform Engineering", slug: "platform-engineering" },
+    { name: "Release Management", slug: "release-management" },
+    { name: "Enterprise Operations", slug: "enterprise-operations" },
+  ];
+
+  for (const team of teams) {
+    await prisma.team.upsert({
+      where: { slug: team.slug },
+      create: team,
+      update: { name: team.name },
+    });
+  }
 }
 
 main()

@@ -1,15 +1,16 @@
 export const runtime = "nodejs";
 
-import { CalendarSource, WebexDeliveryStatus } from "@prisma/client";
+import { CalendarSource, type SeriesRecurrence } from "@prisma/client";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 
 import { jsonErr, jsonOk } from "@/lib/api/envelope";
 import { recordAudit } from "@/lib/audit";
+import { expandSeriesUntilUtc, finalizeWebexForOccurrence } from "@/lib/calendar/event-materialize";
+import { materializationHorizonUtc } from "@/lib/calendar/materialization-horizon";
 import { serializeCalendarEvent } from "@/lib/calendar/serialize-event";
 import { prisma } from "@/lib/db/prisma";
 import { correlationFromHeaders } from "@/lib/http/correlation";
-import { sendWebexMarkdown } from "@/lib/integrations/webex/messages";
 
 function defaultWindow() {
   const from = new Date();
@@ -21,6 +22,39 @@ function defaultWindow() {
   to.setHours(23, 59, 59, 999);
 
   return { from, to };
+}
+
+const RecurrenceEnum = z.enum([
+  "DAILY",
+  "WEEKLY",
+  "BIWEEKLY",
+  "MONTHLY",
+  "QUARTERLY",
+]);
+
+const CreateSchema = z.object({
+  title: z.string().min(1).max(500),
+  description: z.string().max(6000).optional().nullable(),
+  location: z.string().max(500).optional().nullable(),
+  startsAt: z.string().min(1),
+  endsAt: z.string().min(1),
+  timeZone: z.string().min(1).max(64),
+  allDay: z.boolean().optional(),
+  notifyWebex: z.boolean().optional(),
+  teamId: z.string().cuid().optional(),
+  recurrence: RecurrenceEnum.optional(),
+  recurrenceEndsAt: z.string().min(1).optional().nullable(),
+});
+
+async function resolveTeamId(input?: string | null) {
+  if (input) {
+    const team = await prisma.team.findUnique({ where: { id: input } });
+    if (!team) return { ok: false as const, code: "unknown_team" };
+    return { ok: true as const, teamId: team.id };
+  }
+  const first = await prisma.team.findFirst({ orderBy: { name: "asc" } });
+  if (!first) return { ok: false as const, code: "no_teams" };
+  return { ok: true as const, teamId: first.id };
 }
 
 export async function GET(request: NextRequest) {
@@ -52,10 +86,43 @@ export async function GET(request: NextRequest) {
     windowEnd = swap;
   }
 
+  const rawTeamFilter = params.get("teamId");
+  let teamFilter: string | undefined;
+  if (rawTeamFilter) {
+    const parsedTeam = z.string().cuid().safeParse(rawTeamFilter);
+    if (!parsedTeam.success) {
+      return jsonErr(
+        "invalid_team_filter",
+        "teamId must be a valid id when provided.",
+        correlationId,
+        400,
+      );
+    }
+    teamFilter = parsedTeam.data;
+  }
+
   const rows = await prisma.calendarEvent.findMany({
     where: {
       startsAt: { lte: windowEnd },
       endsAt: { gte: windowStart },
+      ...(teamFilter ? { teamId: teamFilter } : {}),
+    },
+    include: {
+      team: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
+      series: {
+        select: {
+          id: true,
+          recurrence: true,
+          recurrenceEndsAt: true,
+          active: true,
+        },
+      },
     },
     orderBy: { startsAt: "asc" },
   });
@@ -66,22 +133,16 @@ export async function GET(request: NextRequest) {
         from: windowStart.toISOString(),
         to: windowEnd.toISOString(),
       },
-      events: rows.map(serializeCalendarEvent),
+      events: rows.map((row) =>
+        serializeCalendarEvent(row, {
+          team: row.team ?? undefined,
+          series: row.series ?? undefined,
+        }),
+      ),
     },
     correlationId,
   );
 }
-
-const CreateSchema = z.object({
-  title: z.string().min(1).max(500),
-  description: z.string().max(6000).optional().nullable(),
-  location: z.string().max(500).optional().nullable(),
-  startsAt: z.string().min(1),
-  endsAt: z.string().min(1),
-  timeZone: z.string().min(1).max(64),
-  allDay: z.boolean().optional(),
-  notifyWebex: z.boolean().optional(),
-});
 
 export async function POST(request: Request) {
   const correlationId = correlationFromHeaders();
@@ -112,7 +173,105 @@ export async function POST(request: Request) {
     );
   }
 
-  const created = await prisma.calendarEvent.create({
+  const team = await resolveTeamId(parsed.teamId);
+  if (!team.ok) {
+    return jsonErr(
+      team.code,
+      team.code === "unknown_team" ?
+        "teamId does not match a known team."
+      : "No teams configured. Seed teams before creating calendar items.",
+      correlationId,
+      400,
+    );
+  }
+
+  const durationMinutes = Math.max(
+    1,
+    Math.round((endsAt.getTime() - startsAt.getTime()) / 60_000),
+  );
+
+  if (parsed.recurrence) {
+    let recurrenceEndsAt: Date | null = null;
+    if (parsed.recurrenceEndsAt) {
+      recurrenceEndsAt = new Date(parsed.recurrenceEndsAt);
+      if (Number.isNaN(recurrenceEndsAt.getTime())) {
+        return jsonErr(
+          "invalid_recurrence_end",
+          "recurrenceEndsAt must be a valid ISO timestamp when provided.",
+          correlationId,
+          400,
+        );
+      }
+      if (recurrenceEndsAt <= startsAt) {
+        return jsonErr(
+          "invalid_recurrence_end",
+          "recurrenceEndsAt must come after startsAt.",
+          correlationId,
+          400,
+        );
+      }
+    }
+
+    const series = await prisma.calendarEventSeries.create({
+      data: {
+        teamId: team.teamId,
+        title: parsed.title.trim(),
+        description:
+          parsed.description === undefined ? null : (
+            parsed.description?.trim() ?? null
+          ),
+        location:
+          parsed.location === undefined ? null : (
+            parsed.location?.trim() ?? null
+          ),
+        timeZone: parsed.timeZone.trim(),
+        allDay: Boolean(parsed.allDay),
+        notifyWebex: Boolean(parsed.notifyWebex),
+        recurrence: parsed.recurrence as SeriesRecurrence,
+        recurrenceEndsAt,
+        anchorStartsAt: startsAt,
+        durationMinutes,
+        active: true,
+      },
+    });
+
+    const untilUtc = materializationHorizonUtc();
+    const expanded = await expandSeriesUntilUtc(series.id, untilUtc);
+
+    await recordAudit({
+      correlationId,
+      action: "calendar.series.created",
+      resourceType: "CalendarEventSeries",
+      resourceId: series.id,
+      payload: {
+        recurrence: parsed.recurrence,
+        occurrencesCreated: expanded.created,
+        horizonUntilUtc: untilUtc.toISOString(),
+        teamId: team.teamId,
+      },
+    });
+
+    return jsonOk(
+      {
+        series: {
+          id: series.id,
+          recurrence: series.recurrence,
+          teamId: series.teamId,
+          anchorStartsAt: series.anchorStartsAt.toISOString(),
+          recurrenceEndsAt:
+            series.recurrenceEndsAt?.toISOString() ?? null,
+          durationMinutes: series.durationMinutes,
+          notifyWebex: series.notifyWebex,
+        },
+        occurrencesMaterialized: expanded.created,
+        materializedUntilUtc: untilUtc.toISOString(),
+      },
+      correlationId,
+      { status: 201 },
+    );
+  }
+
+  const row = await prisma.calendarEvent.create({
     data: {
       title: parsed.title.trim(),
       description:
@@ -129,47 +288,24 @@ export async function POST(request: Request) {
       allDay: Boolean(parsed.allDay),
       source: CalendarSource.INTERNAL,
       notifyWebex: Boolean(parsed.notifyWebex),
+      teamId: team.teamId,
     },
   });
 
-  let deliveryState: WebexDeliveryStatus = WebexDeliveryStatus.NONE;
-  let webexDetail: string | null = null;
-  let webexHttp: number | null = null;
-
-  if (!parsed.notifyWebex) {
-    deliveryState = WebexDeliveryStatus.NONE;
-  } else {
-    const markdown = composeWebexMessage(created.title, startsAt, endsAt);
-    const result = await sendWebexMarkdown({ markdown });
-
-    if (result.ok) {
-      deliveryState = WebexDeliveryStatus.SENT;
-      webexHttp = result.httpStatus;
-      webexDetail =
-        typeof result.messageId === "string" ?
-          `messageId:${result.messageId}`
-        : "sent";
-    } else if (
-      result.skippedReason === "missing_bot_token"
-      || result.skippedReason === "missing_room_id"
-    ) {
-      deliveryState = WebexDeliveryStatus.SKIPPED;
-      webexDetail = result.skippedReason;
-    } else {
-      deliveryState = WebexDeliveryStatus.FAILED;
-      webexDetail = result.detail ?? result.skippedReason;
-      webexHttp = typeof result.httpStatus === "number" ?
-          result.httpStatus
-        : null;
-    }
-  }
+  const finalized = await finalizeWebexForOccurrence({
+    notifyWebex: Boolean(parsed.notifyWebex),
+    title: row.title,
+    startsAt,
+    endsAt,
+  });
 
   const updated = await prisma.calendarEvent.update({
-    where: { id: created.id },
+    where: { id: row.id },
     data: {
-      webexDelivery: deliveryState,
-      webexHttpStatus: webexHttp,
-      webexDetail: webexDetail?.slice(0, 900) ?? null,
+      webexDelivery: finalized.deliveryState,
+      webexHttpStatus:
+        typeof finalized.webexHttp === "number" ? finalized.webexHttp : null,
+      webexDetail: finalized.webexDetail?.slice(0, 900) ?? null,
     },
   });
 
@@ -180,36 +316,37 @@ export async function POST(request: Request) {
     resourceId: updated.id,
     payload: {
       notifyWebex: Boolean(parsed.notifyWebex),
-      delivery: deliveryState,
+      delivery: finalized.deliveryState,
+      teamId: team.teamId,
+    },
+  });
+
+  const filled = await prisma.calendarEvent.findUnique({
+    where: { id: updated.id },
+    include: {
+      team: { select: { id: true, name: true, slug: true } },
+      series: {
+        select: {
+          id: true,
+          recurrence: true,
+          recurrenceEndsAt: true,
+          active: true,
+        },
+      },
     },
   });
 
   return jsonOk(
     {
-      event: serializeCalendarEvent(updated),
+      event:
+        filled ?
+          serializeCalendarEvent(filled, {
+            team: filled.team ?? undefined,
+            series: filled.series ?? undefined,
+          })
+        : serializeCalendarEvent(updated),
     },
     correlationId,
     { status: 201 },
   );
-}
-
-function composeWebexMessage(title: string, startsAt: Date, endsAt: Date) {
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: zone,
-  });
-
-  const safeTitle = title.replace(/\s+/g, " ").slice(0, 400);
-
-  return [
-    "**OpsPilot calendar reminder**",
-    "",
-    `- **${safeTitle}**`,
-    `- Starts ${formatter.format(startsAt)} (${zone})`,
-    `- Ends ${formatter.format(endsAt)} (${zone})`,
-    "",
-    "_Reminder generated automatically from OpsPilot._",
-  ].join("\n");
 }

@@ -1,4 +1,8 @@
-import type { CalendarEvent } from "@prisma/client";
+import type {
+  CalendarEvent,
+  CalendarEventSeries,
+  Team,
+} from "@prisma/client";
 
 export type CalendarEventSerialized = {
   id: string;
@@ -15,9 +19,49 @@ export type CalendarEventSerialized = {
   notifyWebex: boolean;
   webexDelivery: CalendarEvent["webexDelivery"];
   webexHttpStatus: number | null;
+  teamId: string | null;
+  seriesId: string | null;
+  team:
+    | {
+        id: string;
+        name: string;
+        slug: string;
+      }
+    | null;
+  series:
+    | {
+        id: string;
+        recurrence: CalendarEventSeries["recurrence"];
+        recurrenceEndsAt: string | null;
+        active: boolean;
+      }
+    | null;
 };
 
-export function serializeCalendarEvent(event: CalendarEvent): CalendarEventSerialized {
+export function serializeCalendarEvent(
+  event: CalendarEvent,
+  extras?:
+    | {
+        team?:
+          | Pick<Team, "id" | "name" | "slug">
+          | null
+          | undefined;
+        series?:
+          | Pick<
+              CalendarEventSeries,
+              | "id"
+              | "recurrence"
+              | "recurrenceEndsAt"
+              | "active"
+            >
+          | null
+          | undefined;
+      }
+    | undefined,
+): CalendarEventSerialized {
+  const team = extras?.team ?? null;
+  const seriesRow = extras?.series ?? null;
+
   return {
     id: event.id,
     title: event.title,
@@ -33,5 +77,20 @@ export function serializeCalendarEvent(event: CalendarEvent): CalendarEventSeria
     notifyWebex: event.notifyWebex,
     webexDelivery: event.webexDelivery,
     webexHttpStatus: event.webexHttpStatus,
+    teamId: event.teamId,
+    seriesId: event.seriesId,
+    team,
+    series:
+      seriesRow ?
+        {
+          id: seriesRow.id,
+          recurrence: seriesRow.recurrence,
+          recurrenceEndsAt:
+            seriesRow.recurrenceEndsAt ?
+              seriesRow.recurrenceEndsAt.toISOString()
+            : null,
+          active: seriesRow.active,
+        }
+      : null,
   };
 }
