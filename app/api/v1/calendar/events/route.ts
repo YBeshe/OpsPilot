@@ -207,38 +207,52 @@ export async function POST(request: Request) {
   }
 
   let startsAt: Date | undefined;
-  if (p.startsAt) {
-    startsAt = new Date(p.startsAt);
-    if (Number.isNaN(startsAt.getTime())) {
-      return jsonErr("invalid_dates", "startsAt is not a valid timestamp.", correlationId, 400);
-    }
-  } else if (interpreted) {
-    startsAt = interpreted.startsAt;
-  }
-
-  if (!startsAt || Number.isNaN(startsAt.getTime())) {
-    return jsonErr(
-      "incomplete_payload",
-      "startsAt missing or invalid — include ISO startsAt or a parseable phrase in quickAdd.",
-      correlationId,
-      400,
-    );
-  }
-
   let endsAt: Date | undefined;
-  if (p.endsAt) {
-    endsAt = new Date(p.endsAt);
-    if (Number.isNaN(endsAt.getTime())) {
-      return jsonErr("invalid_dates", "endsAt is not a valid timestamp.", correlationId, 400);
-    }
-  } else if (interpreted) {
+
+  /** Plain-language line must own the timestamps so browser datetime-local values do not silently override parsed text */
+  if (quickAdd && interpreted) {
+    startsAt = interpreted.startsAt;
     endsAt = interpreted.endsAt;
+  } else {
+    if (p.startsAt) {
+      startsAt = new Date(p.startsAt);
+      if (Number.isNaN(startsAt.getTime())) {
+        return jsonErr(
+          "invalid_dates",
+          "startsAt is not a valid timestamp.",
+          correlationId,
+          400,
+        );
+      }
+    } else if (interpreted) {
+      startsAt = interpreted.startsAt;
+    }
+
+    if (p.endsAt) {
+      endsAt = new Date(p.endsAt);
+      if (Number.isNaN(endsAt.getTime())) {
+        return jsonErr(
+          "invalid_dates",
+          "endsAt is not a valid timestamp.",
+          correlationId,
+          400,
+        );
+      }
+    } else if (interpreted) {
+      endsAt = interpreted.endsAt;
+    }
   }
 
-  if (!endsAt || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+  if (
+    !startsAt
+    || !endsAt
+    || Number.isNaN(startsAt.getTime())
+    || Number.isNaN(endsAt.getTime())
+    || endsAt <= startsAt
+  ) {
     return jsonErr(
       "invalid_dates",
-      "endsAt must come after startsAt. Override endsAt or describe an explicit interval in quickAdd.",
+      "Ends must come after start. Provide valid ISO timestamps, or clearer date/time wording in quickAdd.",
       correlationId,
       400,
     );

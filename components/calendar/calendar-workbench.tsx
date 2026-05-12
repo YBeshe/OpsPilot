@@ -174,7 +174,7 @@ export function CalendarWorkbench() {
 
     if (qa) payload.quickAdd = qa;
     if (form.title.trim()) payload.title = form.title.trim();
-    if (form.startsAt && form.endsAt) {
+    if (!(qa.length > 0) && form.startsAt && form.endsAt) {
       payload.startsAt = new Date(form.startsAt).toISOString();
       payload.endsAt = new Date(form.endsAt).toISOString();
     }
@@ -363,12 +363,12 @@ export function CalendarWorkbench() {
         <h3 className="text-lg font-semibold text-white">Create OpsPilot event</h3>
         <p className="mt-1 text-sm text-slate-400">
           Pick a team, optional Webex ping, and a repeat cadence (materialized rows). One-off rows skip frequency.
-          Recurring reminders only post Webex once (first occurrence). You can describe the slot in plain language with{" "}
-          <strong className="text-slate-200">quickAdd</strong> (dates/times, daily/weekly/monthly/quarterly, team names such as seeded orgs).
+          Recurring reminders only post Webex once (first occurrence).
+          Describe the slot below; when that box has text we take <strong className="text-slate-200">start/end time from those words only</strong> — the picker fields above are ignored for that submission.
         </p>
         <form className="mt-6 grid gap-4 lg:grid-cols-2" onSubmit={handleCreate}>
           <label className="flex flex-col gap-2 text-sm text-slate-300 lg:col-span-2">
-            Plain-language schedule — optional shortcut
+            Plain-language shortcut — schedule time is read only from this text when it is filled (start/end fields above are skipped). Optional.
             <textarea
               rows={3}
               value={form.quickAdd}
