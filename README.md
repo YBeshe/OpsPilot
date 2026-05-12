@@ -21,7 +21,7 @@ npm run db:seed             # seeded demonstration users only (no SSO yet)
 npm run dev
 ```
 
-Open `http://localhost:3010` (default dev port). Use `/dashboard` for the shell or hit [`/api/v1/health`](/api/v1/health) for diagnostics.
+Open `http://localhost:3010` (default dev port). Use `/dashboard` for the shell or call `GET /api/v1/health` for diagnostics.
 
 Useful npm scripts:
 
