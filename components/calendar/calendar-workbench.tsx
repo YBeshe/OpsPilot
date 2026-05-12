@@ -86,6 +86,7 @@ export function CalendarWorkbench() {
     teamId: "",
     recurrence: "",
     recurrenceEndsAt: "",
+    quickAdd: "",
   });
 
   useEffect(() => {
@@ -146,26 +147,49 @@ export function CalendarWorkbench() {
     e.preventDefault();
     setError(null);
     setBanner(null);
+
+    const qa = form.quickAdd.trim();
+
     if (!form.teamId) {
-      setError("Select a team / org for this event.");
+      setError("Select a team / org.");
       return;
     }
+
+    if (!qa) {
+      if (!form.title.trim()) {
+        setError('Enter a title or describe the meeting in "Plain-language schedule".');
+        return;
+      }
+      if (!form.startsAt || !form.endsAt) {
+        setError("Choose start/end times or add Plain-language scheduling text.");
+        return;
+      }
+    }
+
     const payload: Record<string, unknown> = {
-      title: form.title,
-      description: form.description || null,
-      location: form.location || null,
-      startsAt: new Date(form.startsAt).toISOString(),
-      endsAt: new Date(form.endsAt).toISOString(),
       timeZone: form.timeZone,
-      notifyWebex: form.notifyWebex,
       teamId: form.teamId,
+      notifyWebex: form.notifyWebex,
     };
+
+    if (qa) payload.quickAdd = qa;
+    if (form.title.trim()) payload.title = form.title.trim();
+    if (form.startsAt && form.endsAt) {
+      payload.startsAt = new Date(form.startsAt).toISOString();
+      payload.endsAt = new Date(form.endsAt).toISOString();
+    }
+    if (form.description.trim()) payload.description = form.description;
+    else payload.description = null;
+    if (form.location.trim()) payload.location = form.location;
+    else payload.location = null;
+
     if (form.recurrence) {
       payload.recurrence = form.recurrence;
       if (form.recurrenceEndsAt) {
         payload.recurrenceEndsAt = new Date(form.recurrenceEndsAt).toISOString();
       }
     }
+
     const res = await fetch("/api/v1/calendar/events", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -192,6 +216,7 @@ export function CalendarWorkbench() {
       title: "",
       description: "",
       location: "",
+      quickAdd: "",
       notifyWebex: false,
       recurrence: "",
       recurrenceEndsAt: "",
@@ -338,9 +363,20 @@ export function CalendarWorkbench() {
         <h3 className="text-lg font-semibold text-white">Create OpsPilot event</h3>
         <p className="mt-1 text-sm text-slate-400">
           Pick a team, optional Webex ping, and a repeat cadence (materialized rows). One-off rows skip frequency.
-          Recurring reminders only post Webex once (first occurrence).
+          Recurring reminders only post Webex once (first occurrence). You can describe the slot in plain language with{" "}
+          <strong className="text-slate-200">quickAdd</strong> (dates/times, daily/weekly/monthly/quarterly, team names such as seeded orgs).
         </p>
         <form className="mt-6 grid gap-4 lg:grid-cols-2" onSubmit={handleCreate}>
+          <label className="flex flex-col gap-2 text-sm text-slate-300 lg:col-span-2">
+            Plain-language schedule — optional shortcut
+            <textarea
+              rows={3}
+              value={form.quickAdd}
+              onChange={(e) => setForm((p) => ({ ...p, quickAdd: e.target.value }))}
+              placeholder='Example: “Weekly Release Management CAB tomorrow at 09:30 for 45 minutes, webex, until December 31”'
+              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white placeholder:text-slate-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            />
+          </label>
           <label className="flex flex-col gap-2 text-sm text-slate-300">
             Team / org
             <select

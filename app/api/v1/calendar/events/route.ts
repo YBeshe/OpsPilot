@@ -9,6 +9,10 @@ import { recordAudit } from "@/lib/audit";
 import { expandSeriesUntilUtc, finalizeWebexForOccurrence } from "@/lib/calendar/event-materialize";
 import { materializationHorizonUtc } from "@/lib/calendar/materialization-horizon";
 import { serializeCalendarEvent } from "@/lib/calendar/serialize-event";
+import {
+  interpretPlainLanguageEvent,
+  type PlainLanguageInterpretation,
+} from "@/lib/calendar/plain-language-schedule";
 import { prisma } from "@/lib/db/prisma";
 import { correlationFromHeaders } from "@/lib/http/correlation";
 
@@ -33,12 +37,13 @@ const RecurrenceEnum = z.enum([
 ]);
 
 const CreateSchema = z.object({
-  title: z.string().min(1).max(500),
+  quickAdd: z.string().max(4000).optional(),
+  title: z.string().max(500).optional(),
   description: z.string().max(6000).optional().nullable(),
   location: z.string().max(500).optional().nullable(),
-  startsAt: z.string().min(1),
-  endsAt: z.string().min(1),
-  timeZone: z.string().min(1).max(64),
+  startsAt: z.string().min(1).optional(),
+  endsAt: z.string().min(1).optional(),
+  timeZone: z.string().min(1).max(64).optional(),
   allDay: z.boolean().optional(),
   notifyWebex: z.boolean().optional(),
   teamId: z.string().cuid().optional(),
@@ -146,9 +151,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: Request) {
   const correlationId = correlationFromHeaders();
-  let parsed: z.infer<typeof CreateSchema>;
+  let p: z.infer<typeof CreateSchema>;
   try {
-    parsed = CreateSchema.parse(await request.json());
+    p = CreateSchema.parse(await request.json());
   } catch (error) {
     return jsonErr(
       "invalid_body",
@@ -158,42 +163,95 @@ export async function POST(request: Request) {
     );
   }
 
-  const startsAt = new Date(parsed.startsAt);
-  const endsAt = new Date(parsed.endsAt);
+  const tz = (p.timeZone ?? "UTC").trim();
+  const quickAdd = p.quickAdd?.trim();
+  const structuredTitle = p.title?.trim();
+  const structuredCoreReady =
+    Boolean(structuredTitle) && Boolean(p.startsAt && p.endsAt);
 
-  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
-    return jsonErr("invalid_dates", "Use ISO timestamps.", correlationId, 400);
+  if (!quickAdd && !structuredCoreReady) {
+    return jsonErr(
+      "incomplete_payload",
+      "Provide plain-language scheduling in quickAdd, or send title plus startsAt and endsAt.",
+      correlationId,
+      400,
+    );
   }
-  if (endsAt <= startsAt) {
+
+  const teamsCatalog = await prisma.team.findMany({
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, slug: true },
+  });
+
+  let interpreted: PlainLanguageInterpretation | null = null;
+  if (quickAdd) {
+    const out = interpretPlainLanguageEvent(quickAdd, {
+      instant: new Date(),
+      timeZone: tz,
+      teams: teamsCatalog,
+    });
+    if (!out.ok) {
+      return jsonErr("quick_add_parse", out.message, correlationId, 400);
+    }
+    interpreted = out.value;
+  }
+
+  const title = (structuredTitle ?? interpreted?.title ?? "").trim();
+  if (!title) {
+    return jsonErr(
+      "incomplete_payload",
+      "Title is missing. Add title in the JSON body or clarify it inside quickAdd.",
+      correlationId,
+      400,
+    );
+  }
+
+  let startsAt: Date | undefined;
+  if (p.startsAt) {
+    startsAt = new Date(p.startsAt);
+    if (Number.isNaN(startsAt.getTime())) {
+      return jsonErr("invalid_dates", "startsAt is not a valid timestamp.", correlationId, 400);
+    }
+  } else if (interpreted) {
+    startsAt = interpreted.startsAt;
+  }
+
+  if (!startsAt || Number.isNaN(startsAt.getTime())) {
+    return jsonErr(
+      "incomplete_payload",
+      "startsAt missing or invalid — include ISO startsAt or a parseable phrase in quickAdd.",
+      correlationId,
+      400,
+    );
+  }
+
+  let endsAt: Date | undefined;
+  if (p.endsAt) {
+    endsAt = new Date(p.endsAt);
+    if (Number.isNaN(endsAt.getTime())) {
+      return jsonErr("invalid_dates", "endsAt is not a valid timestamp.", correlationId, 400);
+    }
+  } else if (interpreted) {
+    endsAt = interpreted.endsAt;
+  }
+
+  if (!endsAt || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) {
     return jsonErr(
       "invalid_dates",
-      "endsAt must come after startsAt.",
+      "endsAt must come after startsAt. Override endsAt or describe an explicit interval in quickAdd.",
       correlationId,
       400,
     );
   }
 
-  const team = await resolveTeamId(parsed.teamId);
-  if (!team.ok) {
-    return jsonErr(
-      team.code,
-      team.code === "unknown_team" ?
-        "teamId does not match a known team."
-      : "No teams configured. Seed teams before creating calendar items.",
-      correlationId,
-      400,
-    );
-  }
+  const recurrenceCombined = (
+    p.recurrence ?? interpreted?.recurrence
+  ) as SeriesRecurrence | undefined;
 
-  const durationMinutes = Math.max(
-    1,
-    Math.round((endsAt.getTime() - startsAt.getTime()) / 60_000),
-  );
-
-  if (parsed.recurrence) {
-    let recurrenceEndsAt: Date | null = null;
-    if (parsed.recurrenceEndsAt) {
-      recurrenceEndsAt = new Date(parsed.recurrenceEndsAt);
+  let recurrenceEndsAt: Date | null = null;
+  if (recurrenceCombined) {
+    if (p.recurrenceEndsAt) {
+      recurrenceEndsAt = new Date(p.recurrenceEndsAt);
       if (Number.isNaN(recurrenceEndsAt.getTime())) {
         return jsonErr(
           "invalid_recurrence_end",
@@ -210,24 +268,54 @@ export async function POST(request: Request) {
           400,
         );
       }
+    } else if (interpreted?.recurrenceEndsAt) {
+      recurrenceEndsAt = interpreted.recurrenceEndsAt;
+      if (recurrenceEndsAt <= startsAt) {
+        return jsonErr(
+          "invalid_recurrence_end",
+          "Recurrence \"until\" date must come after the first occurrence start.",
+          correlationId,
+          400,
+        );
+      }
     }
+  }
 
+  const notifyWebex = Boolean(p.notifyWebex) || Boolean(interpreted?.notifyWebex);
+
+  const hintedTeamId = p.teamId ?? interpreted?.teamIdHint;
+  const team = await resolveTeamId(hintedTeamId);
+  if (!team.ok) {
+    return jsonErr(
+      team.code,
+      team.code === "unknown_team" ?
+        "teamId does not match a known team."
+      : "No teams configured. Seed teams before creating calendar items.",
+      correlationId,
+      400,
+    );
+  }
+
+  const durationMinutes = Math.max(
+    1,
+    Math.round((endsAt.getTime() - startsAt.getTime()) / 60_000),
+  );
+
+  if (recurrenceCombined) {
     const series = await prisma.calendarEventSeries.create({
       data: {
         teamId: team.teamId,
-        title: parsed.title.trim(),
+        title,
         description:
-          parsed.description === undefined ? null : (
-            parsed.description?.trim() ?? null
+          p.description === undefined ? null : (
+            p.description?.trim() ?? null
           ),
         location:
-          parsed.location === undefined ? null : (
-            parsed.location?.trim() ?? null
-          ),
-        timeZone: parsed.timeZone.trim(),
-        allDay: Boolean(parsed.allDay),
-        notifyWebex: Boolean(parsed.notifyWebex),
-        recurrence: parsed.recurrence as SeriesRecurrence,
+          p.location === undefined ? null : p.location?.trim() ?? null,
+        timeZone: tz,
+        allDay: Boolean(p.allDay),
+        notifyWebex,
+        recurrence: recurrenceCombined,
         recurrenceEndsAt,
         anchorStartsAt: startsAt,
         durationMinutes,
@@ -244,10 +332,11 @@ export async function POST(request: Request) {
       resourceType: "CalendarEventSeries",
       resourceId: series.id,
       payload: {
-        recurrence: parsed.recurrence,
+        recurrence: recurrenceCombined,
         occurrencesCreated: expanded.created,
         horizonUntilUtc: untilUtc.toISOString(),
         teamId: team.teamId,
+        usedQuickAdd: Boolean(quickAdd),
       },
     });
 
@@ -273,27 +362,25 @@ export async function POST(request: Request) {
 
   const row = await prisma.calendarEvent.create({
     data: {
-      title: parsed.title.trim(),
+      title,
       description:
-        parsed.description === undefined ? undefined : (
-          parsed.description?.trim() ?? null
+        p.description === undefined ? undefined : (
+          p.description?.trim() ?? null
         ),
       location:
-        parsed.location === undefined ? undefined : (
-          parsed.location?.trim() ?? null
-        ),
+        p.location === undefined ? undefined : p.location?.trim() ?? null,
       startsAt,
       endsAt,
-      timeZone: parsed.timeZone.trim(),
-      allDay: Boolean(parsed.allDay),
+      timeZone: tz,
+      allDay: Boolean(p.allDay),
       source: CalendarSource.INTERNAL,
-      notifyWebex: Boolean(parsed.notifyWebex),
+      notifyWebex,
       teamId: team.teamId,
     },
   });
 
   const finalized = await finalizeWebexForOccurrence({
-    notifyWebex: Boolean(parsed.notifyWebex),
+    notifyWebex,
     title: row.title,
     startsAt,
     endsAt,
@@ -315,9 +402,10 @@ export async function POST(request: Request) {
     resourceType: "CalendarEvent",
     resourceId: updated.id,
     payload: {
-      notifyWebex: Boolean(parsed.notifyWebex),
+      notifyWebex,
       delivery: finalized.deliveryState,
       teamId: team.teamId,
+      usedQuickAdd: Boolean(quickAdd),
     },
   });
 

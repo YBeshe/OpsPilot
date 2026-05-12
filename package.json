@@ -19,11 +19,12 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
-    "docker:db": "docker compose up -d db",
-    "docker:db:down": "docker compose down"
+    "docker:db": "(docker compose version >/dev/null 2>&1 && docker compose up -d db) || docker-compose up -d db",
+    "docker:db:down": "(docker compose version >/dev/null 2>&1 && docker compose down) || docker-compose down"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "chrono-node": "^2.9.0",
     "next": "14.2.35",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
