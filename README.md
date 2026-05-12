@@ -14,10 +14,22 @@ This repo starts as **Phase 0–oriented scaffolding**: Next.js (App Router) + T
 git clone https://github.com/YBeshe/OpsPilot.git
 cd OpsPilot
 npm install
+cp .env.example .env
+npm run docker:db           # Postgres on localhost:5435
+npm run db:migrate
+npm run db:seed             # seeded demonstration users only (no SSO yet)
 npm run dev
 ```
 
-Open `http://localhost:3010` (default dev port).
+Open `http://localhost:3010` (default dev port). Use `/dashboard` for the shell or hit [`/api/v1/health`](/api/v1/health) for diagnostics.
+
+Useful npm scripts:
+
+| Script | Meaning |
+|--------|---------|
+| `npm run db:validate` | Schema check (fallback `DATABASE_URL` if unset—local dev oriented) |
+| `npm run db:migrate` | Apply Prisma migrations |
+| `npm run db:studio` | Prisma Studio on the configured database |
 
 | Document | Purpose |
 |----------|---------|

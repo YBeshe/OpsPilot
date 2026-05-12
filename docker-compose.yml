@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opspilot
+      POSTGRES_PASSWORD: opspilot
+      POSTGRES_DB: opspilot
+    ports:
+      - "5435:5432"
+    volumes:
+      - opspilot_pg:/var/lib/postgresql/data
+
+volumes:
+  opspilot_pg:

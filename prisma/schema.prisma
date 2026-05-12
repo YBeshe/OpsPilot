@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Application roles aligned with docs (PHASING Phase 0).
+enum UserRole {
+  PLATFORM_ADMIN
+  DEVOPS_ENGINEER
+  PLATFORM_BSA
+  RELEASE_MANAGER
+  LEADERSHIP
+  VIEWER
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      UserRole @default(VIEWER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  auditEvents AuditLog[] @relation("ActorAuditLogs")
+}
+
+/// Append-friendly audit entries for approvals, integrations, mutations (Phase 0 table only).
+model AuditLog {
+  id             String    @id @default(cuid())
+  createdAt      DateTime  @default(now())
+  correlationId String?
+  actorUserId    String?
+  action         String
+  resourceType   String?
+  resourceId     String?
+  payload        Json?
+  metadata       Json?
+  actor          User?     @relation("ActorAuditLogs", fields: [actorUserId], references: [id])
+
+  @@index([createdAt(sort: Desc)])
+  @@index([actorUserId])
+  @@index([correlationId])
+}

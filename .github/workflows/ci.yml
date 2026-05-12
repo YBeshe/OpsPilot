@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  # Prisma CLI reads schema datasource url for validation/migrate workflows.
+  DATABASE_URL: postgresql://opspilot:opspilot@127.0.0.1:5435/opspilot?schema=public
+
 jobs:
   build:
     runs-on: ubuntu-latest
