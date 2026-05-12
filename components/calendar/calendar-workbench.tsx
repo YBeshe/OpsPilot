@@ -269,6 +269,9 @@ export function CalendarWorkbench() {
     });
   }, []);
 
+  /** When plain-language is used, avoid browser validation on picker/title (partial times like "12:00 --" still block submit). */
+  const structuredFieldsRequired = form.quickAdd.trim().length === 0;
+
   return (
     <div className="space-y-8">
       {outlookSignal === "connected" ? (
@@ -366,7 +369,11 @@ export function CalendarWorkbench() {
           Recurring reminders only post Webex once (first occurrence).
           Describe the slot below; when that box has text we take <strong className="text-slate-200">start/end time from those words only</strong> — the picker fields above are ignored for that submission.
         </p>
-        <form className="mt-6 grid gap-4 lg:grid-cols-2" onSubmit={handleCreate}>
+        <form
+          className="mt-6 grid gap-4 lg:grid-cols-2"
+          noValidate={!structuredFieldsRequired}
+          onSubmit={handleCreate}
+        >
           <label className="flex flex-col gap-2 text-sm text-slate-300 lg:col-span-2">
             Plain-language shortcut — schedule time is read only from this text when it is filled (start/end fields above are skipped). Optional.
             <textarea
@@ -427,7 +434,7 @@ export function CalendarWorkbench() {
           <label className="flex flex-col gap-2 text-sm text-slate-300 lg:col-span-2">
             Title
             <input
-              required
+              required={structuredFieldsRequired}
               value={form.title}
               onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
               className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
@@ -454,7 +461,8 @@ export function CalendarWorkbench() {
             Starts (local)
             <input
               type="datetime-local"
-              required
+              required={structuredFieldsRequired}
+              step={60}
               value={form.startsAt}
               onChange={(e) => setForm((p) => ({ ...p, startsAt: e.target.value }))}
               className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
@@ -464,7 +472,8 @@ export function CalendarWorkbench() {
             Ends (local)
             <input
               type="datetime-local"
-              required
+              required={structuredFieldsRequired}
+              step={60}
               value={form.endsAt}
               onChange={(e) => setForm((p) => ({ ...p, endsAt: e.target.value }))}
               className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
